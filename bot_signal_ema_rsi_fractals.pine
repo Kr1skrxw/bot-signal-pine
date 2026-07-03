@@ -13,12 +13,9 @@ rsi13  = ta.rsi(close, 13)
 sma8   = ta.sma(rsi13, 8)
 
 // ─── FRACTALS ─────────────────────────────────────────────────────────────────
-// Fractal haut  : high[2] est le plus haut sur 5 bougies
-// Fractal bas   : low[2]  est le plus bas  sur 5 bougies
 fractalHigh = high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high[0]
 fractalLow  = low[2]  < low[4]  and low[2]  < low[3]  and low[2]  < low[1]  and low[2]  < low[0]
 
-// Dernière fractal basse / haute (pour le SL)
 var float lastFractalLow  = na
 var float lastFractalHigh = na
 
@@ -30,7 +27,6 @@ if fractalHigh
 // ─── CONDITIONS DE SIGNAL ─────────────────────────────────────────────────────
 bullTrend = ema55 > ema233
 bearTrend = ema55 < ema233
-
 rsiBull   = rsi13 > 50 and rsi13 > sma8
 rsiBear   = rsi13 < 50 and rsi13 < sma8
 
@@ -51,41 +47,81 @@ longTP2  = close * (1 + tp2_pct / 100)
 shortTP1 = close * (1 - tp1_pct / 100)
 shortTP2 = close * (1 - tp2_pct / 100)
 
-// ─── ENTRÉES ──────────────────────────────────────────────────────────────────
-if longSignal and not inTrade
-    strategy.entry("Long", strategy.long, comment="BUY")
-    strategy.exit("TP1 Long",  "Long", qty_percent=33, limit=longTP1, stop=longSL, comment="TP1")
-    strategy.exit("TP2 Long",  "Long", qty_percent=50, limit=longTP2, stop=longSL, comment="TP2")
-    strategy.exit("TP3 Long",  "Long", qty_percent=100,              stop=longSL, comment="TP Libre")
+// ─── SIGNAUX (bord montant uniquement pour eviter les répétitions) ─────────────
+longEntry  = longSignal  and not inTrade and not longSignal[1]
+shortEntry = shortSignal and not inTrade and not shortSignal[1]
 
-if shortSignal and not inTrade
+// ─── ENTRÉES STRATÉGIE ────────────────────────────────────────────────────────
+if longEntry
+    strategy.entry("Long", strategy.long, comment="BUY")
+    strategy.exit("TP1 Long",  "Long", qty_percent=33,  limit=longTP1, stop=longSL, comment="TP1")
+    strategy.exit("TP2 Long",  "Long", qty_percent=50,  limit=longTP2, stop=longSL, comment="TP2")
+    strategy.exit("TP3 Long",  "Long", qty_percent=100,               stop=longSL, comment="TP Libre")
+
+if shortEntry
     strategy.entry("Short", strategy.short, comment="SELL")
-    strategy.exit("TP1 Short", "Short", qty_percent=33, limit=shortTP1, stop=shortSL, comment="TP1")
-    strategy.exit("TP2 Short", "Short", qty_percent=50, limit=shortTP2, stop=shortSL, comment="TP2")
-    strategy.exit("TP3 Short", "Short", qty_percent=100,               stop=shortSL, comment="TP Libre")
+    strategy.exit("TP1 Short", "Short", qty_percent=33,  limit=shortTP1, stop=shortSL, comment="TP1")
+    strategy.exit("TP2 Short", "Short", qty_percent=50,  limit=shortTP2, stop=shortSL, comment="TP2")
+    strategy.exit("TP3 Short", "Short", qty_percent=100,                stop=shortSL, comment="TP Libre")
+
+// ─── ALERTCONDITION WEBHOOK ───────────────────────────────────────────────────
+// Les messages sont au format JSON — coller l'URL webhook dans le champ
+// "Webhook URL" de l'alerte TradingView.
+// {{ticker}}, {{close}}, {{time}} sont des placeholders natifs TradingView.
+
+// ── ACHAT ──
+alertcondition(
+     longEntry,
+     title="ACHAT",
+     message='{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(longSL, 8)) + ',"tp1":' + str.tostring(math.round(longTP1, 8)) + ',"tp2":' + str.tostring(math.round(longTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
+
+// ── VENTE ──
+alertcondition(
+     shortEntry,
+     title="VENTE",
+     message='{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(shortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
+
+// ── CLOSE LONG (SL touché côté long) ──
+alertcondition(
+     inLong and low <= longSL,
+     title="CLOSE LONG (SL)",
+     message='{"action":"close","side":"long","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
+
+// ── CLOSE SHORT (SL touché côté short) ──
+alertcondition(
+     inShort and high >= shortSL,
+     title="CLOSE SHORT (SL)",
+     message='{"action":"close","side":"short","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
+
+// ── ALERTE COMBINÉE (toutes en une seule alerte) ──
+// Utile si ton broker ne gère qu'un seul webhook par chart.
+alertcondition(
+     longEntry or shortEntry or (inLong and low <= longSL) or (inShort and high >= shortSL),
+     title="BOT SIGNAL (all)",
+     message=
+         longEntry  ? '{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(longSL,  8)) + ',"tp1":' + str.tostring(math.round(longTP1,  8)) + ',"tp2":' + str.tostring(math.round(longTP2,  8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
+         shortEntry ? '{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(shortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
+         inLong     ? '{"action":"close","side":"long","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}' :
+                      '{"action":"close","side":"short","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
 
 // ─── AFFICHAGE ────────────────────────────────────────────────────────────────
-plot(ema55,  "EMA 55",  color=color.new(color.blue,  0), linewidth=2)
+plot(ema55,  "EMA 55",  color=color.new(color.blue,   0), linewidth=2)
 plot(ema233, "EMA 233", color=color.new(color.orange, 0), linewidth=2)
 
-// RSI dans une fenêtre séparée
 hline(50, "Mid", color=color.gray, linestyle=hline.style_dashed)
-plot(rsi13, "RSI 13", color=color.new(color.purple, 0), display=display.pane)
-plot(sma8,  "SMA 8 du RSI", color=color.new(color.red, 0), display=display.pane)
+plot(rsi13, "RSI 13",      color=color.new(color.purple, 0), display=display.pane)
+plot(sma8,  "SMA 8 (RSI)", color=color.new(color.red,    0), display=display.pane)
 
-// Fractals
 plotshape(fractalHigh, "Fractal Haut", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.tiny, offset=-2)
 plotshape(fractalLow,  "Fractal Bas",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.tiny, offset=-2)
 
-// Signaux d'entrée
-plotshape(longSignal  and not inTrade, "Signal ACHAT", shape.labelup,   location.belowbar, color.new(color.green, 0), text="BUY",  textcolor=color.white, size=size.small)
-plotshape(shortSignal and not inTrade, "Signal VENTE", shape.labeldown, location.abovebar, color.new(color.red,   0), text="SELL", textcolor=color.white, size=size.small)
+plotshape(longEntry,  "Signal ACHAT", shape.labelup,   location.belowbar, color.new(color.green, 0), text="BUY",  textcolor=color.white, size=size.small)
+plotshape(shortEntry, "Signal VENTE", shape.labeldown, location.abovebar, color.new(color.red,   0), text="SELL", textcolor=color.white, size=size.small)
 
-// Lignes SL actif
 var line slLine = na
 if inLong
     line.delete(slLine)
-    slLine := line.new(bar_index - 1, longSL,  bar_index, longSL,  color=color.red,   width=1, style=line.style_dashed, extend=line.extend.right)
+    slLine := line.new(bar_index - 1, longSL,  bar_index, longSL,  color=color.red, width=1, style=line.style_dashed, extend=line.extend.right)
 if inShort
     line.delete(slLine)
-    slLine := line.new(bar_index - 1, shortSL, bar_index, shortSL, color=color.red,   width=1, style=line.style_dashed, extend=line.extend.right)
+    slLine := line.new(bar_index - 1, shortSL, bar_index, shortSL, color=color.red, width=1, style=line.style_dashed, extend=line.extend.right)
