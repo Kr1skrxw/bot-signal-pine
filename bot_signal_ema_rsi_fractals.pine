@@ -1,0 +1,91 @@
+//@version=6
+strategy("Bot Signal - EMA/RSI/Fractals", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+tp1_pct   = input.float(1.0,  "TP1 (%)",  step=0.1)
+tp2_pct   = input.float(2.0,  "TP2 (%)",  step=0.1)
+sl_buffer = input.float(0.1,  "SL Buffer (%)", step=0.05)
+
+// ─── INDICATORS ───────────────────────────────────────────────────────────────
+ema55  = ta.ema(close, 55)
+ema233 = ta.ema(close, 233)
+rsi13  = ta.rsi(close, 13)
+sma8   = ta.sma(rsi13, 8)
+
+// ─── FRACTALS ─────────────────────────────────────────────────────────────────
+// Fractal haut  : high[2] est le plus haut sur 5 bougies
+// Fractal bas   : low[2]  est le plus bas  sur 5 bougies
+fractalHigh = high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high[0]
+fractalLow  = low[2]  < low[4]  and low[2]  < low[3]  and low[2]  < low[1]  and low[2]  < low[0]
+
+// Dernière fractal basse / haute (pour le SL)
+var float lastFractalLow  = na
+var float lastFractalHigh = na
+
+if fractalLow
+    lastFractalLow := low[2]
+if fractalHigh
+    lastFractalHigh := high[2]
+
+// ─── CONDITIONS DE SIGNAL ─────────────────────────────────────────────────────
+bullTrend = ema55 > ema233
+bearTrend = ema55 < ema233
+
+rsiBull   = rsi13 > 50 and rsi13 > sma8
+rsiBear   = rsi13 < 50 and rsi13 < sma8
+
+longSignal  = bullTrend and rsiBull
+shortSignal = bearTrend and rsiBear
+
+// ─── GESTION DE POSITION UNIQUE ───────────────────────────────────────────────
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+inTrade = inLong or inShort
+
+// ─── CALCUL DES NIVEAUX ───────────────────────────────────────────────────────
+longSL  = not na(lastFractalLow)  ? lastFractalLow  * (1 - sl_buffer / 100) : close * 0.98
+shortSL = not na(lastFractalHigh) ? lastFractalHigh * (1 + sl_buffer / 100) : close * 1.02
+
+longTP1  = close * (1 + tp1_pct / 100)
+longTP2  = close * (1 + tp2_pct / 100)
+shortTP1 = close * (1 - tp1_pct / 100)
+shortTP2 = close * (1 - tp2_pct / 100)
+
+// ─── ENTRÉES ──────────────────────────────────────────────────────────────────
+if longSignal and not inTrade
+    strategy.entry("Long", strategy.long, comment="BUY")
+    strategy.exit("TP1 Long",  "Long", qty_percent=33, limit=longTP1, stop=longSL, comment="TP1")
+    strategy.exit("TP2 Long",  "Long", qty_percent=50, limit=longTP2, stop=longSL, comment="TP2")
+    strategy.exit("TP3 Long",  "Long", qty_percent=100,              stop=longSL, comment="TP Libre")
+
+if shortSignal and not inTrade
+    strategy.entry("Short", strategy.short, comment="SELL")
+    strategy.exit("TP1 Short", "Short", qty_percent=33, limit=shortTP1, stop=shortSL, comment="TP1")
+    strategy.exit("TP2 Short", "Short", qty_percent=50, limit=shortTP2, stop=shortSL, comment="TP2")
+    strategy.exit("TP3 Short", "Short", qty_percent=100,               stop=shortSL, comment="TP Libre")
+
+// ─── AFFICHAGE ────────────────────────────────────────────────────────────────
+plot(ema55,  "EMA 55",  color=color.new(color.blue,  0), linewidth=2)
+plot(ema233, "EMA 233", color=color.new(color.orange, 0), linewidth=2)
+
+// RSI dans une fenêtre séparée
+hline(50, "Mid", color=color.gray, linestyle=hline.style_dashed)
+plot(rsi13, "RSI 13", color=color.new(color.purple, 0), display=display.pane)
+plot(sma8,  "SMA 8 du RSI", color=color.new(color.red, 0), display=display.pane)
+
+// Fractals
+plotshape(fractalHigh, "Fractal Haut", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.tiny, offset=-2)
+plotshape(fractalLow,  "Fractal Bas",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.tiny, offset=-2)
+
+// Signaux d'entrée
+plotshape(longSignal  and not inTrade, "Signal ACHAT", shape.labelup,   location.belowbar, color.new(color.green, 0), text="BUY",  textcolor=color.white, size=size.small)
+plotshape(shortSignal and not inTrade, "Signal VENTE", shape.labeldown, location.abovebar, color.new(color.red,   0), text="SELL", textcolor=color.white, size=size.small)
+
+// Lignes SL actif
+var line slLine = na
+if inLong
+    line.delete(slLine)
+    slLine := line.new(bar_index - 1, longSL,  bar_index, longSL,  color=color.red,   width=1, style=line.style_dashed, extend=line.extend.right)
+if inShort
+    line.delete(slLine)
+    slLine := line.new(bar_index - 1, shortSL, bar_index, shortSL, color=color.red,   width=1, style=line.style_dashed, extend=line.extend.right)
