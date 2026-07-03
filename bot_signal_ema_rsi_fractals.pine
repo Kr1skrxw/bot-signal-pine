@@ -4,10 +4,12 @@ strategy("Bot Signal - EMA/RSI/Fractals", overlay=true, default_qty_type=strateg
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUTS
 // ═══════════════════════════════════════════════════════════════════════════════
-tp1_pct          = input.float(1.0,  "TP1 (%)",       step=0.1,  group="Objectifs")
-tp2_pct          = input.float(2.0,  "TP2 (%)",       step=0.1,  group="Objectifs")
-sl_buffer        = input.float(0.1,  "SL Buffer (%)", step=0.05, group="Stop Loss")
-enable_break_even = input.bool(true, "Break even après TP1", group="Stop Loss")
+tp1_pct            = input.float(1.0,  "TP1 (%)",           step=0.1,  group="Objectifs")
+tp2_pct            = input.float(2.0,  "TP2 (%)",           step=0.1,  group="Objectifs")
+sl_buffer          = input.float(0.1,  "SL Buffer (%)",     step=0.05, group="Stop Loss")
+enable_break_even  = input.bool(true,  "Break even après TP1", group="Stop Loss")
+webhook_freq       = input.string("once_per_bar_close", "Fréquence alerte",
+                         options=["once_per_bar","once_per_bar_close","all"], group="Alertes")
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INDICATORS
@@ -54,7 +56,6 @@ var bool  tp1HitShort    = false
 var bool  breakEvenLong  = false
 var bool  breakEvenShort = false
 
-// Initialisation à l'ouverture de position
 if newLongPosition
     trailSL_long   := not na(lastFractalLow) ? lastFractalLow * (1 - sl_buffer / 100) : close * 0.98
     tp1HitLong     := false
@@ -81,7 +82,7 @@ if inShort and enable_break_even and tp1HitShort and not breakEvenShort and not 
     trailSL_short  := entryPrice
     breakEvenShort := true
 
-// Mise à jour trailing fractal seulement dans le sens favorable
+// Mise à jour trailing fractal (ratchet)
 if inLong and fractalLow
     newSL = low[2] * (1 - sl_buffer / 100)
     if na(trailSL_long) or newSL > trailSL_long
@@ -93,22 +94,23 @@ if inShort and fractalHigh
         trailSL_short := newSL
 
 // Reset à la fermeture
-if positionClosed or not inLong
+if not inLong
     trailSL_long  := na
     tp1HitLong    := false
     breakEvenLong := false
 
-if positionClosed or not inShort
+if not inShort
     trailSL_short  := na
     tp1HitShort    := false
     breakEvenShort := false
 
-activeSL = inLong ? trailSL_long : inShort ? trailSL_short : na
-
-trailUpdatedLong   = inLong  and not na(trailSL_long[1])  and trailSL_long  != trailSL_long[1]
-trailUpdatedShort  = inShort and not na(trailSL_short[1]) and trailSL_short != trailSL_short[1]
+trailUpdatedLong        = inLong  and not na(trailSL_long[1])  and trailSL_long  != trailSL_long[1]
+trailUpdatedShort       = inShort and not na(trailSL_short[1]) and trailSL_short != trailSL_short[1]
 breakEvenTriggeredLong  = inLong  and breakEvenLong  and trailSL_long  == entryPrice and trailSL_long[1]  < entryPrice
 breakEvenTriggeredShort = inShort and breakEvenShort and trailSL_short == entryPrice and trailSL_short[1] > entryPrice
+
+slTouchedLong  = inLong  and not na(trailSL_long)  and low  <= trailSL_long
+slTouchedShort = inShort and not na(trailSL_short) and high >= trailSL_short
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONDITIONS DE SIGNAL
@@ -150,70 +152,56 @@ if shortEntry
     strategy.exit("TP2 Short", "Short", qty_percent=50,  limit=shortTP2, stop=entryShortSL, comment="TP2")
     strategy.exit("TP3 Short", "Short", qty_percent=100,                 stop=entryShortSL, comment="TP Libre")
 
-// Fermeture manuelle sur trailing / break even dynamique
-if inLong and not na(trailSL_long) and low <= trailSL_long
+// Fermeture manuelle sur trailing / break even
+if slTouchedLong
     strategy.close("Long", comment=breakEvenLong ? "Break Even" : "Trailing SL")
 
-if inShort and not na(trailSL_short) and high >= trailSL_short
+if slTouchedShort
     strategy.close("Short", comment=breakEvenShort ? "Break Even" : "Trailing SL")
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ALERTCONDITION WEBHOOK
+// ALERTES WEBHOOK — alert() au lieu de alertcondition()
+// alert() accepte les series string → pas de contrainte const string
+// Créer UNE SEULE alerte TradingView sur l'indicateur avec
+// condition "Any alert() call" → le message est généré dynamiquement
 // ═══════════════════════════════════════════════════════════════════════════════
-alertcondition(
-     longEntry,
-     title="ACHAT",
-     message='{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryLongSL, 8)) + ',"tp1":' + str.tostring(math.round(longTP1, 8)) + ',"tp2":' + str.tostring(math.round(longTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
 
-alertcondition(
-     shortEntry,
-     title="VENTE",
-     message='{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryShortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
+f_r(val) =>
+    str.tostring(math.round(val, 6))
 
-alertcondition(
-     trailUpdatedLong,
-     title="TRAIL SL UPDATE (Long)",
-     message='{"action":"update_sl","side":"long","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(trailSL_long, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+if longEntry
+    msg = '{"action":"buy","symbol":"' + syminfo.ticker + '","price":' + f_r(close) + ',"sl":' + f_r(entryLongSL) + ',"tp1":' + f_r(longTP1) + ',"tp2":' + f_r(longTP2) + ',"tf":"' + timeframe.period + '"}'
+    alert(msg, alert.freq_once_per_bar_close)
 
-alertcondition(
-     trailUpdatedShort,
-     title="TRAIL SL UPDATE (Short)",
-     message='{"action":"update_sl","side":"short","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(trailSL_short, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+if shortEntry
+    msg = '{"action":"sell","symbol":"' + syminfo.ticker + '","price":' + f_r(close) + ',"sl":' + f_r(entryShortSL) + ',"tp1":' + f_r(shortTP1) + ',"tp2":' + f_r(shortTP2) + ',"tf":"' + timeframe.period + '"}'
+    alert(msg, alert.freq_once_per_bar_close)
 
-alertcondition(
-     breakEvenTriggeredLong,
-     title="BREAK EVEN (Long)",
-     message='{"action":"update_sl","mode":"break_even","side":"long","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(entryPrice, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+if breakEvenTriggeredLong
+    msg = '{"action":"update_sl","mode":"break_even","side":"long","symbol":"' + syminfo.ticker + '","new_sl":' + f_r(entryPrice) + ',"price":' + f_r(close) + '}'
+    alert(msg, alert.freq_once_per_bar_close)
 
-alertcondition(
-     breakEvenTriggeredShort,
-     title="BREAK EVEN (Short)",
-     message='{"action":"update_sl","mode":"break_even","side":"short","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(entryPrice, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+if breakEvenTriggeredShort
+    msg = '{"action":"update_sl","mode":"break_even","side":"short","symbol":"' + syminfo.ticker + '","new_sl":' + f_r(entryPrice) + ',"price":' + f_r(close) + '}'
+    alert(msg, alert.freq_once_per_bar_close)
 
-alertcondition(
-     inLong and not na(trailSL_long) and low <= trailSL_long,
-     title="CLOSE LONG (Trailing SL)",
-     message='{"action":"close","side":"long","reason":"' + (breakEvenLong ? 'break_even' : 'trailing_sl') + '","symbol":"{{ticker}}","sl_level":' + str.tostring(math.round(trailSL_long, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+if trailUpdatedLong and not breakEvenTriggeredLong
+    msg = '{"action":"update_sl","side":"long","symbol":"' + syminfo.ticker + '","new_sl":' + f_r(trailSL_long) + ',"price":' + f_r(close) + '}'
+    alert(msg, alert.freq_once_per_bar_close)
 
-alertcondition(
-     inShort and not na(trailSL_short) and high >= trailSL_short,
-     title="CLOSE SHORT (Trailing SL)",
-     message='{"action":"close","side":"short","reason":"' + (breakEvenShort ? 'break_even' : 'trailing_sl') + '","symbol":"{{ticker}}","sl_level":' + str.tostring(math.round(trailSL_short, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+if trailUpdatedShort and not breakEvenTriggeredShort
+    msg = '{"action":"update_sl","side":"short","symbol":"' + syminfo.ticker + '","new_sl":' + f_r(trailSL_short) + ',"price":' + f_r(close) + '}'
+    alert(msg, alert.freq_once_per_bar_close)
 
-alertcondition(
-     longEntry or shortEntry or trailUpdatedLong or trailUpdatedShort or breakEvenTriggeredLong or breakEvenTriggeredShort
-     or (inLong and not na(trailSL_long) and low <= trailSL_long)
-     or (inShort and not na(trailSL_short) and high >= trailSL_short),
-     title="BOT SIGNAL (all)",
-     message=
-         longEntry               ? '{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryLongSL, 8))  + ',"tp1":' + str.tostring(math.round(longTP1,  8)) + ',"tp2":' + str.tostring(math.round(longTP2,  8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
-         shortEntry              ? '{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryShortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
-         breakEvenTriggeredLong  ? '{"action":"update_sl","mode":"break_even","side":"long","symbol":"{{ticker}}","new_sl":'  + str.tostring(math.round(entryPrice, 8)) + ',"price":{{close}},"time":"{{time}}"}' :
-         breakEvenTriggeredShort ? '{"action":"update_sl","mode":"break_even","side":"short","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(entryPrice, 8)) + ',"price":{{close}},"time":"{{time}}"}' :
-         trailUpdatedLong        ? '{"action":"update_sl","side":"long","symbol":"{{ticker}}","new_sl":'  + str.tostring(math.round(trailSL_long,  8)) + ',"price":{{close}},"time":"{{time}}"}' :
-         trailUpdatedShort       ? '{"action":"update_sl","side":"short","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(trailSL_short, 8)) + ',"price":{{close}},"time":"{{time}}"}' :
-         inLong                  ? '{"action":"close","side":"long","reason":"' + (breakEvenLong ? 'break_even' : 'trailing_sl') + '","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}' :
-                                   '{"action":"close","side":"short","reason":"' + (breakEvenShort ? 'break_even' : 'trailing_sl') + '","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
+if slTouchedLong
+    reason = breakEvenLong ? 'break_even' : 'trailing_sl'
+    msg = '{"action":"close","side":"long","reason":"' + reason + '","symbol":"' + syminfo.ticker + '","sl_level":' + f_r(trailSL_long) + ',"price":' + f_r(close) + '}'
+    alert(msg, alert.freq_once_per_bar_close)
+
+if slTouchedShort
+    reason = breakEvenShort ? 'break_even' : 'trailing_sl'
+    msg = '{"action":"close","side":"short","reason":"' + reason + '","symbol":"' + syminfo.ticker + '","sl_level":' + f_r(trailSL_short) + ',"price":' + f_r(close) + '}'
+    alert(msg, alert.freq_once_per_bar_close)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DISPLAY
@@ -231,10 +219,10 @@ plotshape(fractalLow,  "Fractal Bas",  shape.triangleup,   location.belowbar, co
 plotshape(longEntry,  "Signal ACHAT", shape.labelup,   location.belowbar, color.new(color.green, 0), text="BUY",  textcolor=color.white, size=size.small)
 plotshape(shortEntry, "Signal VENTE", shape.labeldown, location.abovebar, color.new(color.red,   0), text="SELL", textcolor=color.white, size=size.small)
 
-plot(inLong  and not na(trailSL_long)  ? trailSL_long  : na, "Trailing SL Long",  color=color.new(color.red,  20), linewidth=2, style=plot.style_linebr)
-plot(inShort and not na(trailSL_short) ? trailSL_short : na, "Trailing SL Short", color=color.new(color.red,  20), linewidth=2, style=plot.style_linebr)
+plot(inLong  and not na(trailSL_long)  ? trailSL_long  : na, "Trailing SL Long",  color=color.new(color.red, 20), linewidth=2, style=plot.style_linebr)
+plot(inShort and not na(trailSL_short) ? trailSL_short : na, "Trailing SL Short", color=color.new(color.red, 20), linewidth=2, style=plot.style_linebr)
 
-plotshape(trailUpdatedLong,  title="Trail update long",  style=shape.circle, location=location.absolute, color=color.new(color.yellow, 0), size=size.tiny)
-plotshape(trailUpdatedShort, title="Trail update short", style=shape.circle, location=location.absolute, color=color.new(color.yellow, 0), size=size.tiny)
-plotshape(breakEvenTriggeredLong ? trailSL_long : na,  title="Break even long",  style=shape.diamond, location=location.absolute, color=color.new(color.aqua, 0), size=size.tiny)
-plotshape(breakEvenTriggeredShort ? trailSL_short : na, title="Break even short", style=shape.diamond, location=location.absolute, color=color.new(color.aqua, 0), size=size.tiny)
+plotshape(trailUpdatedLong  and not breakEvenTriggeredLong,  title="Trail update long",  style=shape.circle,  location=location.absolute, color=color.new(color.yellow, 0), size=size.tiny)
+plotshape(trailUpdatedShort and not breakEvenTriggeredShort, title="Trail update short", style=shape.circle,  location=location.absolute, color=color.new(color.yellow, 0), size=size.tiny)
+plotshape(breakEvenTriggeredLong,  title="Break even long",  style=shape.diamond, location=location.absolute, color=color.new(color.aqua, 0), size=size.small)
+plotshape(breakEvenTriggeredShort, title="Break even short", style=shape.diamond, location=location.absolute, color=color.new(color.aqua, 0), size=size.small)
