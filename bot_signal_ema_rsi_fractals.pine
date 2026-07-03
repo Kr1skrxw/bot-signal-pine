@@ -17,7 +17,7 @@ webhook_freq       = input.string("once_per_bar_close", "Fréquence alerte",
 ema55  = ta.ema(close, 55)
 ema233 = ta.ema(close, 233)
 rsi13  = ta.rsi(close, 13)
-sma8   = ta.sma(rsi13, 8)
+sma13  = ta.sma(rsi13, 13)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // FRACTALS (Williams 5 bougies)
@@ -117,8 +117,8 @@ slTouchedShort = inShort and not na(trailSL_short) and high >= trailSL_short
 // ═══════════════════════════════════════════════════════════════════════════════
 bullTrend = ema55 > ema233
 bearTrend = ema55 < ema233
-rsiBull   = rsi13 > 50 and rsi13 > sma8
-rsiBear   = rsi13 < 50 and rsi13 < sma8
+rsiBull   = rsi13 > 50 and rsi13 > sma13
+rsiBear   = rsi13 < 50 and rsi13 < sma13
 
 longSignal  = bullTrend and rsiBull
 shortSignal = bearTrend and rsiBear
@@ -160,10 +160,8 @@ if slTouchedShort
     strategy.close("Short", comment=breakEvenShort ? "Break Even" : "Trailing SL")
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ALERTES WEBHOOK — alert() au lieu de alertcondition()
-// alert() accepte les series string → pas de contrainte const string
-// Créer UNE SEULE alerte TradingView sur l'indicateur avec
-// condition "Any alert() call" → le message est généré dynamiquement
+// ALERTES WEBHOOK — alert()
+// Créer UNE SEULE alerte TradingView → condition "Any alert() call"
 // ═══════════════════════════════════════════════════════════════════════════════
 
 f_r(val) =>
@@ -210,8 +208,8 @@ plot(ema55,  "EMA 55",  color=color.new(color.blue,   0), linewidth=2)
 plot(ema233, "EMA 233", color=color.new(color.orange, 0), linewidth=2)
 
 hline(50, "Mid", color=color.gray, linestyle=hline.style_dashed)
-plot(rsi13, "RSI 13",      color=color.new(color.purple, 0), display=display.pane)
-plot(sma8,  "SMA 8 (RSI)", color=color.new(color.red,    0), display=display.pane)
+plot(rsi13, "RSI 13",       color=color.new(color.purple, 0), display=display.pane)
+plot(sma13, "SMA 13 (RSI)", color=color.new(color.red,    0), display=display.pane)
 
 plotshape(fractalHigh, "Fractal Haut", shape.triangledown, location.abovebar, color.new(color.red,   0), size=size.tiny, offset=-2)
 plotshape(fractalLow,  "Fractal Bas",  shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.tiny, offset=-2)
