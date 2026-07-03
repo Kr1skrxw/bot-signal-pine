@@ -1,21 +1,28 @@
 //@version=6
 strategy("Bot Signal - EMA/RSI/Fractals", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
 
-// ─── INPUTS ───────────────────────────────────────────────────────────────────
-tp1_pct   = input.float(1.0,  "TP1 (%)",  step=0.1)
-tp2_pct   = input.float(2.0,  "TP2 (%)",  step=0.1)
-sl_buffer = input.float(0.1,  "SL Buffer (%)", step=0.05)
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+tp1_pct   = input.float(1.0,  "TP1 (%)",       step=0.1,  group="Objectifs")
+tp2_pct   = input.float(2.0,  "TP2 (%)",       step=0.1,  group="Objectifs")
+sl_buffer = input.float(0.1,  "SL Buffer (%)", step=0.05, group="Stop Loss")
 
-// ─── INDICATORS ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// INDICATORS
+// ═══════════════════════════════════════════════════════════════════════════════
 ema55  = ta.ema(close, 55)
 ema233 = ta.ema(close, 233)
 rsi13  = ta.rsi(close, 13)
 sma8   = ta.sma(rsi13, 8)
 
-// ─── FRACTALS ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// FRACTALS (Williams 5 bougies)
+// ═══════════════════════════════════════════════════════════════════════════════
 fractalHigh = high[2] > high[4] and high[2] > high[3] and high[2] > high[1] and high[2] > high[0]
 fractalLow  = low[2]  < low[4]  and low[2]  < low[3]  and low[2]  < low[1]  and low[2]  < low[0]
 
+// Dernière fractal brute (toutes positions)
 var float lastFractalLow  = na
 var float lastFractalHigh = na
 
@@ -24,7 +31,62 @@ if fractalLow
 if fractalHigh
     lastFractalHigh := high[2]
 
-// ─── CONDITIONS DE SIGNAL ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRAILING STOP FRACTAL
+// ═══════════════════════════════════════════════════════════════════════════════
+// Logique :
+//   LONG  → le SL ne monte QUE si la nouvelle fractal basse est SUPÉRIEURE
+//           à l'ancienne (on serre progressivement sans jamais redescendre)
+//   SHORT → le SL ne descend QUE si la nouvelle fractal haute est INFÉRIEURE
+//           à l'ancienne (idem côté short)
+//
+// La mise à jour n'a lieu QUE quand une position est ouverte.
+
+var float trailSL_long  = na   // SL actif pour position long
+var float trailSL_short = na   // SL actif pour position short
+
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+inTrade = inLong or inShort
+
+// ── Initialisation du SL à l'entrée ──
+if strategy.position_size > 0 and strategy.position_size[1] <= 0
+    // On vient d'entrer long → on initialise avec la dernière fractal basse connue
+    trailSL_long := not na(lastFractalLow) ? lastFractalLow * (1 - sl_buffer / 100) : close * 0.98
+
+if strategy.position_size < 0 and strategy.position_size[1] >= 0
+    // On vient d'entrer short → on initialise avec la dernière fractal haute connue
+    trailSL_short := not na(lastFractalHigh) ? lastFractalHigh * (1 + sl_buffer / 100) : close * 1.02
+
+// ── Mise à jour du trailing pendant la position ──
+if inLong and fractalLow
+    newSL = low[2] * (1 - sl_buffer / 100)
+    // On monte le SL uniquement si la nouvelle fractal est PLUS HAUTE
+    if na(trailSL_long) or newSL > trailSL_long
+        trailSL_long := newSL
+
+if inShort and fractalHigh
+    newSL = high[2] * (1 + sl_buffer / 100)
+    // On descend le SL uniquement si la nouvelle fractal est PLUS BASSE
+    if na(trailSL_short) or newSL < trailSL_short
+        trailSL_short := newSL
+
+// ── Remise à zéro à la fermeture ──
+if not inLong
+    trailSL_long  := na
+if not inShort
+    trailSL_short := na
+
+// SL final utilisé dans les exits et alertes
+activeSL = inLong ? trailSL_long : inShort ? trailSL_short : na
+
+// Détection d'un mouvement du trailing (pour l'alerte webhook)
+trailUpdatedLong  = inLong  and fractalLow  and trailSL_long  != trailSL_long[1]
+trailUpdatedShort = inShort and fractalHigh and trailSL_short != trailSL_short[1]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONDITIONS DE SIGNAL
+// ═══════════════════════════════════════════════════════════════════════════════
 bullTrend = ema55 > ema233
 bearTrend = ema55 < ema233
 rsiBull   = rsi13 > 50 and rsi13 > sma8
@@ -33,78 +95,104 @@ rsiBear   = rsi13 < 50 and rsi13 < sma8
 longSignal  = bullTrend and rsiBull
 shortSignal = bearTrend and rsiBear
 
-// ─── GESTION DE POSITION UNIQUE ───────────────────────────────────────────────
-inLong  = strategy.position_size > 0
-inShort = strategy.position_size < 0
-inTrade = inLong or inShort
+// Bord montant uniquement (pas de répétition)
+longEntry  = longSignal  and not inTrade and not longSignal[1]
+shortEntry = shortSignal and not inTrade and not shortSignal[1]
 
-// ─── CALCUL DES NIVEAUX ───────────────────────────────────────────────────────
-longSL  = not na(lastFractalLow)  ? lastFractalLow  * (1 - sl_buffer / 100) : close * 0.98
-shortSL = not na(lastFractalHigh) ? lastFractalHigh * (1 + sl_buffer / 100) : close * 1.02
-
+// ═══════════════════════════════════════════════════════════════════════════════
+// CALCUL DES NIVEAUX TP
+// ═══════════════════════════════════════════════════════════════════════════════
 longTP1  = close * (1 + tp1_pct / 100)
 longTP2  = close * (1 + tp2_pct / 100)
 shortTP1 = close * (1 - tp1_pct / 100)
 shortTP2 = close * (1 - tp2_pct / 100)
 
-// ─── SIGNAUX (bord montant uniquement pour eviter les répétitions) ─────────────
-longEntry  = longSignal  and not inTrade and not longSignal[1]
-shortEntry = shortSignal and not inTrade and not shortSignal[1]
+// SL à l'entrée (avant que le trailing soit initialisé)
+entryLongSL  = not na(lastFractalLow)  ? lastFractalLow  * (1 - sl_buffer / 100) : close * 0.98
+entryShortSL = not na(lastFractalHigh) ? lastFractalHigh * (1 + sl_buffer / 100) : close * 1.02
 
-// ─── ENTRÉES STRATÉGIE ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENTRÉES STRATÉGIE
+// ═══════════════════════════════════════════════════════════════════════════════
 if longEntry
     strategy.entry("Long", strategy.long, comment="BUY")
-    strategy.exit("TP1 Long",  "Long", qty_percent=33,  limit=longTP1, stop=longSL, comment="TP1")
-    strategy.exit("TP2 Long",  "Long", qty_percent=50,  limit=longTP2, stop=longSL, comment="TP2")
-    strategy.exit("TP3 Long",  "Long", qty_percent=100,               stop=longSL, comment="TP Libre")
+    strategy.exit("TP1 Long",  "Long", qty_percent=33,  limit=longTP1,  stop=entryLongSL,  comment="TP1")
+    strategy.exit("TP2 Long",  "Long", qty_percent=50,  limit=longTP2,  stop=entryLongSL,  comment="TP2")
+    strategy.exit("TP3 Long",  "Long", qty_percent=100,                 stop=entryLongSL,  comment="TP Libre")
 
 if shortEntry
     strategy.entry("Short", strategy.short, comment="SELL")
-    strategy.exit("TP1 Short", "Short", qty_percent=33,  limit=shortTP1, stop=shortSL, comment="TP1")
-    strategy.exit("TP2 Short", "Short", qty_percent=50,  limit=shortTP2, stop=shortSL, comment="TP2")
-    strategy.exit("TP3 Short", "Short", qty_percent=100,                stop=shortSL, comment="TP Libre")
+    strategy.exit("TP1 Short", "Short", qty_percent=33,  limit=shortTP1, stop=entryShortSL, comment="TP1")
+    strategy.exit("TP2 Short", "Short", qty_percent=50,  limit=shortTP2, stop=entryShortSL, comment="TP2")
+    strategy.exit("TP3 Short", "Short", qty_percent=100,                 stop=entryShortSL, comment="TP Libre")
 
-// ─── ALERTCONDITION WEBHOOK ───────────────────────────────────────────────────
-// Les messages sont au format JSON — coller l'URL webhook dans le champ
-// "Webhook URL" de l'alerte TradingView.
-// {{ticker}}, {{close}}, {{time}} sont des placeholders natifs TradingView.
+// ── Mise à jour du SL dans strategy.exit quand le trailing bouge ──
+// strategy.exit() en Pine Script ne supporte pas la modification dynamique
+// du stop en cours de position. On gère donc la fermeture manuellement
+// lorsque le prix touche le trailing SL mis à jour.
+if inLong and not na(trailSL_long) and low <= trailSL_long
+    strategy.close("Long", comment="Trailing SL")
+
+if inShort and not na(trailSL_short) and high >= trailSL_short
+    strategy.close("Short", comment="Trailing SL")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERTCONDITION WEBHOOK
+// ═══════════════════════════════════════════════════════════════════════════════
 
 // ── ACHAT ──
 alertcondition(
      longEntry,
      title="ACHAT",
-     message='{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(longSL, 8)) + ',"tp1":' + str.tostring(math.round(longTP1, 8)) + ',"tp2":' + str.tostring(math.round(longTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
+     message='{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryLongSL, 8)) + ',"tp1":' + str.tostring(math.round(longTP1, 8)) + ',"tp2":' + str.tostring(math.round(longTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
 
 // ── VENTE ──
 alertcondition(
      shortEntry,
      title="VENTE",
-     message='{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(shortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
+     message='{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryShortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}')
 
-// ── CLOSE LONG (SL touché côté long) ──
+// ── TRAILING SL MIS À JOUR (long) ──
 alertcondition(
-     inLong and low <= longSL,
-     title="CLOSE LONG (SL)",
-     message='{"action":"close","side":"long","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
+     trailUpdatedLong,
+     title="TRAIL SL UPDATE (Long)",
+     message='{"action":"update_sl","side":"long","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(trailSL_long, 8)) + ',"price":{{close}},"time":"{{time}}"}')
 
-// ── CLOSE SHORT (SL touché côté short) ──
+// ── TRAILING SL MIS À JOUR (short) ──
 alertcondition(
-     inShort and high >= shortSL,
-     title="CLOSE SHORT (SL)",
-     message='{"action":"close","side":"short","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
+     trailUpdatedShort,
+     title="TRAIL SL UPDATE (Short)",
+     message='{"action":"update_sl","side":"short","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(trailSL_short, 8)) + ',"price":{{close}},"time":"{{time}}"}')
 
-// ── ALERTE COMBINÉE (toutes en une seule alerte) ──
-// Utile si ton broker ne gère qu'un seul webhook par chart.
+// ── CLOSE LONG (trailing SL touché) ──
 alertcondition(
-     longEntry or shortEntry or (inLong and low <= longSL) or (inShort and high >= shortSL),
+     inLong and not na(trailSL_long) and low <= trailSL_long,
+     title="CLOSE LONG (Trailing SL)",
+     message='{"action":"close","side":"long","reason":"trailing_sl","symbol":"{{ticker}}","sl_level":' + str.tostring(math.round(trailSL_long, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+
+// ── CLOSE SHORT (trailing SL touché) ──
+alertcondition(
+     inShort and not na(trailSL_short) and high >= trailSL_short,
+     title="CLOSE SHORT (Trailing SL)",
+     message='{"action":"close","side":"short","reason":"trailing_sl","symbol":"{{ticker}}","sl_level":' + str.tostring(math.round(trailSL_short, 8)) + ',"price":{{close}},"time":"{{time}}"}')
+
+// ── ALERTE COMBINÉE ──
+alertcondition(
+     longEntry or shortEntry or trailUpdatedLong or trailUpdatedShort
+     or (inLong and not na(trailSL_long) and low <= trailSL_long)
+     or (inShort and not na(trailSL_short) and high >= trailSL_short),
      title="BOT SIGNAL (all)",
      message=
-         longEntry  ? '{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(longSL,  8)) + ',"tp1":' + str.tostring(math.round(longTP1,  8)) + ',"tp2":' + str.tostring(math.round(longTP2,  8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
-         shortEntry ? '{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(shortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
-         inLong     ? '{"action":"close","side":"long","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}' :
-                      '{"action":"close","side":"short","reason":"SL","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
+         longEntry          ? '{"action":"buy","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryLongSL, 8))  + ',"tp1":' + str.tostring(math.round(longTP1,  8)) + ',"tp2":' + str.tostring(math.round(longTP2,  8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
+         shortEntry         ? '{"action":"sell","symbol":"{{ticker}}","price":{{close}},"sl":' + str.tostring(math.round(entryShortSL, 8)) + ',"tp1":' + str.tostring(math.round(shortTP1, 8)) + ',"tp2":' + str.tostring(math.round(shortTP2, 8)) + ',"time":"{{time}}","tf":"{{interval}}"}' :
+         trailUpdatedLong   ? '{"action":"update_sl","side":"long","symbol":"{{ticker}}","new_sl":'  + str.tostring(math.round(trailSL_long,  8)) + ',"price":{{close}},"time":"{{time}}"}' :
+         trailUpdatedShort  ? '{"action":"update_sl","side":"short","symbol":"{{ticker}}","new_sl":' + str.tostring(math.round(trailSL_short, 8)) + ',"price":{{close}},"time":"{{time}}"}' :
+         inLong             ? '{"action":"close","side":"long","reason":"trailing_sl","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}' :
+                              '{"action":"close","side":"short","reason":"trailing_sl","symbol":"{{ticker}}","price":{{close}},"time":"{{time}}"}')
 
-// ─── AFFICHAGE ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// AFFICHAGE
+// ═══════════════════════════════════════════════════════════════════════════════
 plot(ema55,  "EMA 55",  color=color.new(color.blue,   0), linewidth=2)
 plot(ema233, "EMA 233", color=color.new(color.orange, 0), linewidth=2)
 
@@ -118,10 +206,10 @@ plotshape(fractalLow,  "Fractal Bas",  shape.triangleup,   location.belowbar, co
 plotshape(longEntry,  "Signal ACHAT", shape.labelup,   location.belowbar, color.new(color.green, 0), text="BUY",  textcolor=color.white, size=size.small)
 plotshape(shortEntry, "Signal VENTE", shape.labeldown, location.abovebar, color.new(color.red,   0), text="SELL", textcolor=color.white, size=size.small)
 
-var line slLine = na
-if inLong
-    line.delete(slLine)
-    slLine := line.new(bar_index - 1, longSL,  bar_index, longSL,  color=color.red, width=1, style=line.style_dashed, extend=line.extend.right)
-if inShort
-    line.delete(slLine)
-    slLine := line.new(bar_index - 1, shortSL, bar_index, shortSL, color=color.red, width=1, style=line.style_dashed, extend=line.extend.right)
+// Ligne du trailing SL actif (se déplace avec chaque nouvelle fractal)
+plot(inLong  and not na(trailSL_long)  ? trailSL_long  : na, "Trailing SL Long",  color=color.new(color.red,  20), linewidth=2, style=plot.style_linebr)
+plot(inShort and not na(trailSL_short) ? trailSL_short : na, "Trailing SL Short", color=color.new(color.red,  20), linewidth=2, style=plot.style_linebr)
+
+// Signal visuel quand le trailing monte/descend
+plotshape(trailUpdatedLong,  "Trail Mis à jour (Long)",  shape.circle, location.absolute, color.new(color.yellow, 0), size=size.tiny, location_value=trailSL_long)
+plotshape(trailUpdatedShort, "Trail Mis à jour (Short)", shape.circle, location.absolute, color.new(color.yellow, 0), size=size.tiny, location_value=trailSL_short)
