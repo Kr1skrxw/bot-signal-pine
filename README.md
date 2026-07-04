@@ -7,7 +7,7 @@ Stratégie complète pour TradingView en Pine Script v6 avec alertes webhook JSO
 |---|---|
 | EMA | 55 et 233 (sur le close) |
 | RSI | période 13 |
-| SMA du RSI | période 8 |
+| SMA du RSI | période 13 |
 | Fractals | Williams (5 bougies) |
 
 ## Logique de signal
